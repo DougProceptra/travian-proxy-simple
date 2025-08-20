@@ -1,3 +1,6 @@
+// Simple Node.js proxy for Anthropic API
+const https = require('https');
+
 export default async function handler(req, res) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,30 +25,51 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Get request body (already parsed by Vercel)
-    const body = req.body;
-    
-    // Call Anthropic API
-    const anthropicResponse = await fetch('https://api.anthropic.com/v1/messages', {
+    // Prepare the request body
+    const requestBody = JSON.stringify({
+      model: req.body.model || 'claude-3-5-sonnet-20241022',
+      max_tokens: req.body.max_tokens || 1000,
+      messages: req.body.messages,
+      temperature: req.body.temperature || 0.7,
+    });
+
+    // Make request to Anthropic
+    const options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody),
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: body.model || 'claude-3-5-sonnet-20241022',
-        max_tokens: body.max_tokens || 1000,
-        messages: body.messages,
-        temperature: body.temperature || 0.7,
-      }),
+      }
+    };
+
+    const anthropicReq = https.request(options, (anthropicRes) => {
+      let data = '';
+      
+      anthropicRes.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      anthropicRes.on('end', () => {
+        try {
+          const responseData = JSON.parse(data);
+          res.status(anthropicRes.statusCode).json(responseData);
+        } catch (parseError) {
+          res.status(500).json({ error: 'Failed to parse Anthropic response' });
+        }
+      });
     });
 
-    // Get the response
-    const data = await anthropicResponse.json();
-    
-    // Return the response
-    return res.status(anthropicResponse.ok ? 200 : anthropicResponse.status).json(data);
+    anthropicReq.on('error', (error) => {
+      console.error('Request error:', error);
+      res.status(500).json({ error: 'Failed to connect to Anthropic API' });
+    });
+
+    anthropicReq.write(requestBody);
+    anthropicReq.end();
     
   } catch (error) {
     console.error('Proxy error:', error);
