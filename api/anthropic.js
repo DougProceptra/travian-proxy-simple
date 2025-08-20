@@ -1,7 +1,10 @@
 // Simple Node.js proxy for Anthropic API
+// Force rebuild: 1
 const https = require('https');
 
 export default async function handler(req, res) {
+  console.log('New version running - Node.js native');
+  
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -72,9 +75,9 @@ export default async function handler(req, res) {
     anthropicReq.end();
     
   } catch (error) {
-    console.error('Proxy error:', error);
+    console.error('Handler error:', error);
     return res.status(500).json({ 
-      error: 'Proxy error', 
+      error: 'Handler error', 
       message: error.message 
     });
   }
