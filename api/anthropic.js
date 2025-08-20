@@ -1,35 +1,29 @@
-export default async function handler(request) {
-  // Handle CORS preflight
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { 
-      status: 200, 
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      }
-    });
+export default async function handler(req, res) {
+  // Enable CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  // Only allow POST
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   // Check for API key
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.error('ANTHROPIC_API_KEY not found in environment variables');
-    return new Response(
-      JSON.stringify({ error: 'Server configuration error - no API key' }), 
-      { 
-        status: 500,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Content-Type': 'application/json',
-        }
-      }
-    );
+    return res.status(500).json({ error: 'Server configuration error - no API key' });
   }
 
   try {
-    // Parse request body
-    const body = await request.json();
+    // Get request body (already parsed by Vercel)
+    const body = req.body;
     
     // Call Anthropic API
     const anthropicResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -50,28 +44,14 @@ export default async function handler(request) {
     // Get the response
     const data = await anthropicResponse.json();
     
-    // Return with CORS headers
-    return new Response(JSON.stringify(data), {
-      status: anthropicResponse.ok ? 200 : anthropicResponse.status,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Content-Type': 'application/json',
-      }
-    });
+    // Return the response
+    return res.status(anthropicResponse.ok ? 200 : anthropicResponse.status).json(data);
     
   } catch (error) {
     console.error('Proxy error:', error);
-    return new Response(
-      JSON.stringify({ error: 'Proxy error', message: error.message }), 
-      { 
-        status: 500,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Content-Type': 'application/json',
-        }
-      }
-    );
+    return res.status(500).json({ 
+      error: 'Proxy error', 
+      message: error.message 
+    });
   }
 }
