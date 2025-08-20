@@ -1,0 +1,8 @@
+{
+  "name": "travian-proxy-simple",
+  "version": "1.0.0",
+  "description": "Simple CORS proxy for Anthropic API",
+  "main": "api/anthropic.js",
+  "author": "Doug Dostal",
+  "license": "MIT"
+}
