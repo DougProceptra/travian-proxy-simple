@@ -36,7 +36,7 @@ module.exports = async function handler(req, res) {
     const https = require('https');
     
     const requestBody = JSON.stringify({
-      model: body.model || 'claude-3-5-sonnet-20241022',
+      model: body.model || 'claude-sonnet-4-20250514',  // UPDATED TO SONNET 4!
       max_tokens: body.max_tokens || 1000,
       messages: body.messages,
       temperature: body.temperature || 0.7,
