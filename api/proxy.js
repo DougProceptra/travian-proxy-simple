@@ -36,7 +36,7 @@ module.exports = async function handler(req, res) {
     const https = require('https');
     
     const requestBody = JSON.stringify({
-      model: body.model || 'claude-3-5-sonnet-20241022',  // Using Claude 3.5 Sonnet which definitely works
+      model: body.model || 'claude-sonnet-4-20250514',  // Claude Sonnet 4 model ID from Anthropic docs
       max_tokens: body.max_tokens || 1000,
       messages: body.messages,
       temperature: body.temperature || 0.7,
