@@ -1,40 +1,6 @@
-// Travian Proxy with Mem0 Integration
-const https = require('https');
-
-// Helper function to make HTTPS requests
-function httpsRequest(options, body) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(data) });
-        } catch (e) {
-          resolve({ status: res.statusCode, data: data });
-        }
-      });
-    });
-    req.on('error', reject);
-    if (body) req.write(body);
-    req.end();
-  });
-}
-
-// Determine game phase for mem0 metadata
-function determineGamePhase(gameState) {
-  const villages = gameState?.villages?.length || 1;
-  const cpHours = gameState?.culturePoints?.hoursRemaining;
-  
-  if (villages === 1 && cpHours && cpHours < 48) return 'settlement_rush';
-  if (villages < 3) return 'early_expansion';
-  if (villages < 10) return 'mid_game_growth';
-  if (villages >= 10) return 'late_game';
-  return 'unknown_phase';
-}
-
+// Enhanced Vercel Proxy with mem0 Integration and Better System Prompts
 module.exports = async function handler(req, res) {
-  console.log('Travian Proxy with Mem0 - Node.js handler');
+  console.log('Travian Proxy with mem0 - Node.js handler');
   
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -56,149 +22,148 @@ module.exports = async function handler(req, res) {
   const mem0Key = process.env.MEM0_API_KEY;
   
   if (!anthropicKey) {
-    console.error('ANTHROPIC_API_KEY not found');
+    console.error('ANTHROPIC_API_KEY not found in environment variables');
     return res.status(500).json({ error: 'Server configuration error - no Anthropic API key' });
+  }
+
+  const https = require('https');
+  
+  // Helper function for HTTPS requests
+  function httpsRequest(options, data) {
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let responseData = '';
+        res.on('data', chunk => responseData += chunk);
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode,
+              data: responseData ? JSON.parse(responseData) : {}
+            });
+          } catch (e) {
+            resolve({ status: res.statusCode, data: responseData });
+          }
+        });
+      });
+      
+      req.on('error', reject);
+      if (data) req.write(data);
+      req.end();
+    });
   }
 
   try {
     const body = req.body;
     
-    // Check if this is a mem0-enhanced request (has userId and gameState)
-    if (body.userId && body.gameState) {
-      console.log(`Processing mem0-enhanced request for user ${body.userId.substring(0, 10)}...`);
+    // Check if this is a mem0-enhanced request
+    if (body.userId && body.gameState && mem0Key) {
+      console.log('Processing mem0-enhanced request for user:', body.userId);
       
-      let relevantMemories = [];
-      
-      // Only use mem0 if API key is configured
-      if (mem0Key) {
-        try {
-          // Search for relevant memories for this user
-          const mem0SearchBody = JSON.stringify({
-            query: body.message || body.messages?.[0]?.content || '',
-            user_id: body.userId,
-            limit: 5
-          });
-
-          const mem0SearchOptions = {
-            hostname: 'api.mem0.ai',
-            path: '/v1/memories/search/',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Token ${mem0Key}`,
-              'Content-Length': Buffer.byteLength(mem0SearchBody)
-            }
-          };
-
-          const searchResult = await httpsRequest(mem0SearchOptions, mem0SearchBody);
-          
-          if (searchResult.status === 200 && searchResult.data.results) {
-            relevantMemories = searchResult.data.results;
-            console.log(`Found ${relevantMemories.length} relevant memories`);
+      // 1. Search mem0 for relevant memories
+      let memories = [];
+      try {
+        const mem0SearchOptions = {
+          hostname: 'api.mem0.ai',
+          path: `/v1/memories?user_id=${body.userId}&limit=10`,
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${mem0Key}`,
+            'Content-Type': 'application/json'
           }
-        } catch (mem0Error) {
-          console.error('Mem0 search error:', mem0Error);
-          // Continue without memories if mem0 fails
+        };
+        
+        const mem0Result = await httpsRequest(mem0SearchOptions);
+        if (mem0Result.status === 200 && mem0Result.data.results) {
+          memories = mem0Result.data.results;
+          console.log(`Found ${memories.length} memories for user`);
         }
+      } catch (error) {
+        console.error('Mem0 search error:', error);
+        // Continue without memories
       }
       
-      // Build enhanced system prompt with game context and memories
-      const systemPrompt = `You are an expert Travian Legends strategic advisor with access to the player's current game state and history.
-
-## CURRENT GAME STATE
-Resources: Wood ${body.gameState.resources?.wood || 0}, Clay ${body.gameState.resources?.clay || 0}, Iron ${body.gameState.resources?.iron || 0}, Crop ${body.gameState.resources?.crop || 0}
-Production: Wood ${body.gameState.production?.wood || 0}/h, Clay ${body.gameState.production?.clay || 0}/h, Iron ${body.gameState.production?.iron || 0}/h, Crop ${body.gameState.production?.crop || 0}/h
-Culture Points: ${body.gameState.culturePoints?.current || 0}/${body.gameState.culturePoints?.needed || '?'} (${body.gameState.culturePoints?.hoursRemaining || '?'}h to settlement)
-Hero: Level ${body.gameState.heroData?.level || '?'}, Resource Production: ${JSON.stringify(body.gameState.heroData?.resourceProduction || {})}
-Villages: ${body.gameState.villages?.length || 1}
-Population: ${body.gameState.population || 0}
-Tribe: ${body.gameState.tribe || 'Unknown'}
-Server: ${body.gameState.serverSpeed || 1}x speed
-
-${relevantMemories.length > 0 ? '## YOUR PAST PATTERNS & STRATEGIES\n' + relevantMemories.map(m => `- ${m.memory} (relevance: ${m.score?.toFixed(2) || 'N/A'})`).join('\n') : ''}
-
-${body.gameMechanics ? '## GAME MECHANICS DATA\n' + JSON.stringify(body.gameMechanics, null, 2) : ''}
-
-## INSTRUCTIONS
-- Provide specific, actionable advice based on the current game state
-- Use actual numbers from the game data in your recommendations
-- Reference past patterns and what has worked for this player before
-- Focus on Travian Legends mechanics (not Kingdoms or other versions)
-- For this ${body.gameState.serverSpeed || 1}x server, adjust all timing recommendations accordingly`;
-
-      // Prepare messages for Claude
-      const messages = body.messages || [{ role: 'user', content: body.message }];
+      // 2. Build enhanced system prompt with game context and memories
+      const systemPrompt = body.system || buildEnhancedSystemPrompt(body.gameState, memories);
       
-      // Call Claude with enhanced context
-      const anthropicBody = JSON.stringify({
+      // 3. Build messages array with context
+      const messages = [];
+      
+      // Add user message with game context
+      const contextualizedMessage = buildContextualMessage(body.message, body.gameState);
+      messages.push({ role: 'user', content: contextualizedMessage });
+      
+      // 4. Send to Claude with enhanced prompt
+      const requestBody = JSON.stringify({
         model: body.model || 'claude-sonnet-4-20250514',
         max_tokens: body.max_tokens || 2000,
-        messages: messages,
         system: systemPrompt,
+        messages: messages,
         temperature: body.temperature || 0.7
       });
 
-      const anthropicOptions = {
+      const claudeOptions = {
         hostname: 'api.anthropic.com',
         path: '/v1/messages',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(anthropicBody),
+          'Content-Length': Buffer.byteLength(requestBody),
           'x-api-key': anthropicKey,
           'anthropic-version': '2023-06-01'
         }
       };
 
-      const claudeResult = await httpsRequest(anthropicOptions, anthropicBody);
+      const claudeResult = await httpsRequest(claudeOptions, requestBody);
       
-      // Store conversation in mem0 if successful and API key exists
-      if (mem0Key && claudeResult.status === 200 && claudeResult.data.content) {
+      if (claudeResult.status !== 200) {
+        console.error('Claude API error:', claudeResult.data);
+        return res.status(claudeResult.status).json(claudeResult.data);
+      }
+      
+      // 5. Store conversation in mem0
+      if (mem0Key && claudeResult.data.content && claudeResult.data.content[0]) {
         try {
-          const mem0AddBody = JSON.stringify({
+          const memoryContent = {
+            user_message: body.message,
+            ai_response: claudeResult.data.content[0].text,
+            game_state_summary: summarizeGameState(body.gameState),
+            timestamp: new Date().toISOString()
+          };
+          
+          const mem0StoreOptions = {
+            hostname: 'api.mem0.ai',
+            path: '/v1/memories',
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${mem0Key}`,
+              'Content-Type': 'application/json'
+            }
+          };
+          
+          const mem0Data = JSON.stringify({
             messages: [
-              {
-                role: 'user',
-                content: body.message || messages[messages.length - 1].content
-              },
-              {
-                role: 'assistant',
-                content: claudeResult.data.content[0].text
-              }
+              { role: 'user', content: body.message },
+              { role: 'assistant', content: claudeResult.data.content[0].text }
             ],
             user_id: body.userId,
             metadata: {
-              game_phase: determineGamePhase(body.gameState),
-              villages: body.gameState.villages?.length || 1,
-              culture_points: body.gameState.culturePoints?.current || 0,
-              timestamp: new Date().toISOString()
+              game_state: summarizeGameState(body.gameState),
+              conversation_id: body.conversationId
             }
           });
-
-          const mem0AddOptions = {
-            hostname: 'api.mem0.ai',
-            path: '/v1/memories/',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Token ${mem0Key}`,
-              'Content-Length': Buffer.byteLength(mem0AddBody)
-            }
-          };
-
-          await httpsRequest(mem0AddOptions, mem0AddBody);
-          console.log(`Stored memory for user ${body.userId.substring(0, 10)}...`);
-        } catch (mem0StoreError) {
-          console.error('Mem0 store error:', mem0StoreError);
-          // Don't fail the request if mem0 storage fails
+          
+          await httpsRequest(mem0StoreOptions, mem0Data);
+          console.log('Stored conversation in mem0');
+        } catch (error) {
+          console.error('Mem0 store error:', error);
+          // Continue without storing
         }
       }
       
-      // Return Claude's response
-      return res.status(claudeResult.status).json(claudeResult.data);
+      return res.status(200).json(claudeResult.data);
       
     } else {
-      // Fallback to simple proxy mode for backwards compatibility
+      // Regular proxy request without mem0
       console.log('Processing simple proxy request (no mem0)');
       
       if (!body || !body.messages) {
@@ -237,3 +202,76 @@ ${body.gameMechanics ? '## GAME MECHANICS DATA\n' + JSON.stringify(body.gameMech
     });
   }
 };
+
+// Helper functions
+function buildEnhancedSystemPrompt(gameState, memories) {
+  const hero = gameState.heroData || {};
+  
+  let prompt = `You are an expert Travian Legends strategic advisor with deep game knowledge.
+
+## GAME CONTEXT
+- Server: ${gameState.serverSpeed || 2}x speed
+- Tribe: ${gameState.tribe || 'Unknown'}
+- Villages: ${gameState.villages?.length || 1}
+- Population: ${gameState.population || 0}
+
+## RESOURCES
+- Current: Wood ${gameState.resources?.wood || 0}, Clay ${gameState.resources?.clay || 0}, Iron ${gameState.resources?.iron || 0}, Crop ${gameState.resources?.crop || 0}
+- Production: Wood ${gameState.production?.wood || 0}/h, Clay ${gameState.production?.clay || 0}/h, Iron ${gameState.production?.iron || 0}/h, Crop ${gameState.production?.crop || 0}/h
+
+## CULTURE POINTS
+- Current/Needed: ${gameState.culturePoints?.current || 0}/${gameState.culturePoints?.needed || 'unknown'}
+- Daily Production: ${gameState.culturePoints?.totalPerDay || 0}
+- Time to Settlement: ${gameState.culturePoints?.hoursRemaining || 'unknown'} hours
+
+## HERO STATUS
+- Level: ${hero.level || 'unknown'}
+- Health: ${hero.health || 'unknown'}%
+- Attack Power: ${hero.attack || 'unknown'}
+- Defense Power: ${hero.defense || 'unknown'}
+- Fighting Strength: ${hero.fightingStrength || 'unknown'}
+- Resource Production: ${hero.resourceProduction ? JSON.stringify(hero.resourceProduction) : 'unknown'}`;
+
+  // Add memories if available
+  if (memories && memories.length > 0) {
+    prompt += '\n\n## PLAYER HISTORY & PATTERNS\n';
+    memories.slice(0, 5).forEach(memory => {
+      if (memory.memory) {
+        prompt += `- ${memory.memory}\n`;
+      }
+    });
+  }
+
+  prompt += `
+
+## RESPONSE GUIDELINES
+1. Always consider the player's actual game state when giving advice
+2. Be specific with numbers and calculations based on their resources
+3. Format responses with clear sections using markdown headers (##, ###)
+4. For combat questions, calculate exact outcomes based on Travian Legends mechanics
+5. Use bullet points and numbered lists for clarity
+6. Highlight important information with **bold** text
+7. For oasis attacks, consider hero equipment and whether hero is mounted
+8. Provide strategic reasoning for all recommendations
+
+Remember: This is Travian Legends (the online game), not historical information.`;
+
+  return prompt;
+}
+
+function buildContextualMessage(userMessage, gameState) {
+  return `[Current Game State: ${gameState.serverSpeed}x server, ${gameState.villages?.length || 1} villages, Population ${gameState.population}, Resources: ${gameState.resources?.wood}/${gameState.resources?.clay}/${gameState.resources?.iron}/${gameState.resources?.crop}]
+
+${userMessage}`;
+}
+
+function summarizeGameState(gameState) {
+  return {
+    villages: gameState.villages?.length || 1,
+    population: gameState.population || 0,
+    resources: gameState.resources || {},
+    production: gameState.production || {},
+    culturePoints: gameState.culturePoints?.current || 0,
+    heroLevel: gameState.heroData?.level || 0
+  };
+}
