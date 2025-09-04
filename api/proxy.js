@@ -1,4 +1,4 @@
-// Enhanced Vercel Proxy with mem0 Integration
+// Enhanced Vercel Proxy with mem0 Integration and Debug Logging
 // File: /api/proxy.js for travian-proxy-simple repository
 
 module.exports = async function handler(req, res) {
@@ -27,6 +27,9 @@ module.exports = async function handler(req, res) {
     console.error('ANTHROPIC_API_KEY not found in environment variables');
     return res.status(500).json({ error: 'Server configuration error - no Anthropic API key' });
   }
+
+  // Log environment status
+  console.log('[Config] MEM0_API_KEY:', MEM0_API_KEY ? 'Present' : 'Missing');
 
   const https = require('https');
   
@@ -61,6 +64,7 @@ module.exports = async function handler(req, res) {
   async function searchMemories(userId, query = null) {
     if (!MEM0_API_KEY || !userId) {
       console.log('⚠️ Mem0 not configured or no userId, skipping memory retrieval');
+      console.log('[Debug] MEM0_API_KEY:', !!MEM0_API_KEY, 'userId:', userId);
       return [];
     }
     
@@ -85,14 +89,18 @@ module.exports = async function handler(req, res) {
         }
       };
       
+      console.log('[mem0] Search URL:', `https://api.mem0.ai/v1/memories?${params.toString()}`);
+      
       const result = await httpsRequest(options, null);
+      
+      console.log('[mem0] Search response status:', result.status);
       
       if (result.status === 200 && result.data) {
         const memories = result.data.memories || result.data.results || [];
         console.log(`✅ Retrieved ${memories.length} memories`);
         return memories;
       } else {
-        console.error('❌ Mem0 retrieval failed:', result.status, result.data);
+        console.error('❌ Mem0 retrieval failed:', result.status, JSON.stringify(result.data));
       }
     } catch (error) {
       console.error('❌ Mem0 retrieval error:', error.message);
@@ -103,6 +111,7 @@ module.exports = async function handler(req, res) {
   async function storeMemory(userId, messages, gameState = null) {
     if (!MEM0_API_KEY || !userId) {
       console.log('⚠️ Mem0 not configured or no userId, skipping memory storage');
+      console.log('[Debug] MEM0_API_KEY:', !!MEM0_API_KEY, 'userId:', userId);
       return;
     }
     
@@ -128,6 +137,8 @@ module.exports = async function handler(req, res) {
       
       const requestBody = JSON.stringify(memoryData);
       
+      console.log('[mem0] Store payload size:', requestBody.length, 'bytes');
+      
       const options = {
         hostname: 'api.mem0.ai',
         path: '/v1/memories',
@@ -141,10 +152,12 @@ module.exports = async function handler(req, res) {
       
       const result = await httpsRequest(options, requestBody);
       
+      console.log('[mem0] Store response status:', result.status);
+      
       if (result.status === 200 || result.status === 201) {
         console.log('✅ Memory stored successfully');
       } else {
-        console.error('❌ Mem0 storage failed:', result.status, result.data);
+        console.error('❌ Mem0 storage failed:', result.status, JSON.stringify(result.data));
       }
     } catch (error) {
       console.error('❌ Mem0 storage error:', error.message);
@@ -208,7 +221,13 @@ module.exports = async function handler(req, res) {
   
   try {
     const body = req.body;
+    
+    // Detailed request logging
     console.log('[Proxy] Request body keys:', Object.keys(body || {}));
+    console.log('[Proxy] userId:', body?.userId || 'NOT PROVIDED');
+    console.log('[Proxy] Has gameState:', !!body?.gameState);
+    console.log('[Proxy] Has messages:', !!body?.messages);
+    console.log('[Proxy] Has message:', !!body?.message);
     
     if (!body) {
       return res.status(400).json({ error: 'Invalid request - no body' });
@@ -238,7 +257,10 @@ module.exports = async function handler(req, res) {
     // Search mem0 for relevant memories if userId provided
     let memories = [];
     if (userId && MEM0_API_KEY) {
+      console.log(`[mem0] Processing request for user: ${userId.substring(0, 10)}...`);
       memories = await searchMemories(userId, userMessage);
+    } else {
+      console.log('[mem0] Skipping - userId:', userId, 'MEM0_API_KEY:', !!MEM0_API_KEY);
     }
     
     // Build enhanced system prompt with memories and game context
@@ -282,6 +304,7 @@ module.exports = async function handler(req, res) {
     if (userId && MEM0_API_KEY && claudeResult.data) {
       const assistantMessage = claudeResult.data.content?.[0]?.text || '';
       if (assistantMessage) {
+        console.log('[mem0] Attempting to store conversation...');
         await storeMemory(
           userId,
           [
@@ -291,6 +314,8 @@ module.exports = async function handler(req, res) {
           gameState
         );
       }
+    } else {
+      console.log('[mem0] Not storing - userId:', userId, 'MEM0_API_KEY:', !!MEM0_API_KEY, 'has response:', !!claudeResult.data);
     }
     
     // Return Claude's response
