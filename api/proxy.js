@@ -1,5 +1,6 @@
 // Enhanced Vercel Proxy with mem0 Integration and Debug Logging
 // File: /api/proxy.js for travian-proxy-simple repository
+// Updated: September 4, 2025 - Fixed mem0 API 301 redirect issue
 
 module.exports = async function handler(req, res) {
   console.log('[Travian Proxy] Request received - Node.js handler with mem0');
@@ -33,22 +34,52 @@ module.exports = async function handler(req, res) {
 
   const https = require('https');
   
-  // Helper function for HTTPS requests
-  function httpsRequest(options, data) {
+  // Helper function for HTTPS requests with redirect handling
+  function httpsRequest(options, data, followRedirects = true, maxRedirects = 3) {
     return new Promise((resolve, reject) => {
+      if (maxRedirects <= 0) {
+        reject(new Error('Too many redirects'));
+        return;
+      }
+
       const req = https.request(options, (response) => {
+        // Handle redirects (301, 302, 307, 308)
+        if (followRedirects && [301, 302, 307, 308].includes(response.statusCode) && response.headers.location) {
+          console.log(`[HTTP] Following redirect from ${response.statusCode} to ${response.headers.location}`);
+          
+          // Parse the redirect URL
+          const redirectUrl = new URL(response.headers.location);
+          const newOptions = {
+            ...options,
+            hostname: redirectUrl.hostname,
+            path: redirectUrl.pathname + redirectUrl.search,
+            port: redirectUrl.port || (redirectUrl.protocol === 'https:' ? 443 : 80)
+          };
+          
+          // For 307/308, preserve the method and body
+          if ([307, 308].includes(response.statusCode)) {
+            return httpsRequest(newOptions, data, followRedirects, maxRedirects - 1).then(resolve).catch(reject);
+          } else {
+            // For 301/302, GET request without body
+            newOptions.method = 'GET';
+            return httpsRequest(newOptions, null, followRedirects, maxRedirects - 1).then(resolve).catch(reject);
+          }
+        }
+
         let responseData = '';
         response.on('data', chunk => responseData += chunk);
         response.on('end', () => {
           try {
             resolve({
               status: response.statusCode,
-              data: responseData ? JSON.parse(responseData) : null
+              data: responseData ? JSON.parse(responseData) : null,
+              headers: response.headers
             });
           } catch (e) {
             resolve({
               status: response.statusCode,
-              data: responseData
+              data: responseData,
+              headers: response.headers
             });
           }
         });
@@ -60,7 +91,7 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  // mem0 helper functions
+  // mem0 helper functions with updated API endpoints
   async function searchMemories(userId, query = null) {
     if (!MEM0_API_KEY || !userId) {
       console.log('⚠️ Mem0 not configured or no userId, skipping memory retrieval');
@@ -79,28 +110,30 @@ module.exports = async function handler(req, res) {
         params.append('search_query', query);
       }
       
+      // Use the correct mem0 API endpoint
       const options = {
         hostname: 'api.mem0.ai',
-        path: `/v1/memories?${params.toString()}`,
+        path: `/v1/memories/?${params.toString()}`, // Added trailing slash
         method: 'GET',
         headers: {
           'Authorization': `Token ${MEM0_API_KEY}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         }
       };
       
-      console.log('[mem0] Search URL:', `https://api.mem0.ai/v1/memories?${params.toString()}`);
+      console.log('[mem0] Search URL:', `https://${options.hostname}${options.path}`);
       
-      const result = await httpsRequest(options, null);
+      const result = await httpsRequest(options, null, true); // Enable redirect following
       
       console.log('[mem0] Search response status:', result.status);
       
       if (result.status === 200 && result.data) {
-        const memories = result.data.memories || result.data.results || [];
-        console.log(`✅ Retrieved ${memories.length} memories`);
-        return memories;
+        const memories = result.data.memories || result.data.results || result.data || [];
+        console.log(`✅ Retrieved ${Array.isArray(memories) ? memories.length : 0} memories`);
+        return Array.isArray(memories) ? memories : [];
       } else {
-        console.error('❌ Mem0 retrieval failed:', result.status, JSON.stringify(result.data));
+        console.error('❌ Mem0 retrieval failed:', result.status, typeof result.data === 'object' ? JSON.stringify(result.data) : result.data);
       }
     } catch (error) {
       console.error('❌ Mem0 retrieval error:', error.message);
@@ -118,14 +151,13 @@ module.exports = async function handler(req, res) {
     try {
       console.log(`[mem0] Storing memory for user ${userId.substring(0, 10)}...`);
       
-      // Build memory payload
+      // Build memory payload according to mem0 API documentation
       const memoryData = {
         messages: messages,
-        user_id: userId,
-        metadata: {}
+        user_id: userId
       };
       
-      // Add game context if available
+      // Add metadata if game state is available
       if (gameState) {
         memoryData.metadata = {
           gamePhase: determineGamePhase(gameState),
@@ -141,23 +173,27 @@ module.exports = async function handler(req, res) {
       
       const options = {
         hostname: 'api.mem0.ai',
-        path: '/v1/memories',
+        path: '/v1/memories/', // Added trailing slash
         method: 'POST',
         headers: {
           'Authorization': `Token ${MEM0_API_KEY}`,
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
           'Content-Length': Buffer.byteLength(requestBody)
         }
       };
       
-      const result = await httpsRequest(options, requestBody);
+      const result = await httpsRequest(options, requestBody, true); // Enable redirect following
       
       console.log('[mem0] Store response status:', result.status);
       
       if (result.status === 200 || result.status === 201) {
         console.log('✅ Memory stored successfully');
+        if (result.data) {
+          console.log('[mem0] Memory ID:', result.data.id || result.data.memory_id || 'not provided');
+        }
       } else {
-        console.error('❌ Mem0 storage failed:', result.status, JSON.stringify(result.data));
+        console.error('❌ Mem0 storage failed:', result.status, typeof result.data === 'object' ? JSON.stringify(result.data) : result.data);
       }
     } catch (error) {
       console.error('❌ Mem0 storage error:', error.message);
@@ -182,8 +218,8 @@ module.exports = async function handler(req, res) {
     if (memories && memories.length > 0) {
       systemPrompt += `\n\n## Previous Context\n`;
       memories.forEach((memory, index) => {
-        if (memory.memory || memory.text) {
-          systemPrompt += `- ${memory.memory || memory.text}\n`;
+        if (memory.memory || memory.text || memory.content) {
+          systemPrompt += `- ${memory.memory || memory.text || memory.content}\n`;
         }
       });
     }
@@ -290,7 +326,7 @@ module.exports = async function handler(req, res) {
       }
     };
     
-    const claudeResult = await httpsRequest(claudeOptions, claudeRequestBody);
+    const claudeResult = await httpsRequest(claudeOptions, claudeRequestBody, false); // Don't follow redirects for Claude
     
     if (claudeResult.status !== 200) {
       console.error('[Claude] API error:', claudeResult.status, claudeResult.data);
